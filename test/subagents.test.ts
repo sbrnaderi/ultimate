@@ -629,7 +629,9 @@ describe('provider error recovery', () => {
       held.release()
       await until(async () => (await reports(f.opened)).length === 1)
       await f.opened.harness.waitForIdle(context)
-      expect(JSON.stringify(await reports(f.opened))).toContain('failed: no_model')
+      expect(JSON.stringify(await reports(f.opened))).toContain(
+        'failed: ended its turn without an answer (no_model)',
+      )
       await f.opened.harness.commit(
         (tx) =>
           configure(tx, child.conversationId, { model: { provider: 'faux', modelId: 'faux-1' } }),
@@ -719,7 +721,11 @@ describe('provider error recovery', () => {
       const delivered = await reports(f.opened)
       expect(delivered).toHaveLength(1)
       const text = delivered[0].model![0].content
-      expect(text).toContain(retryFails ? 'failed: model_error' : 'Recovered answer')
+      expect(text).toContain(
+        retryFails
+          ? 'failed: ended its turn without an answer (model_error · faux/faux-1 · fixture provider error)'
+          : 'Recovered answer',
+      )
       expect(JSON.stringify(text).includes('failed:')).toBe(retryFails)
       expect(f.errors).toEqual([])
     })
@@ -971,7 +977,9 @@ describe('provider error recovery', () => {
     expect(inputs).toEqual(['provider failure', retryText])
     const delivered = await reports(resumed)
     expect(delivered).toHaveLength(1)
-    expect(delivered[0].model![0].content).toMatch(/failed: model_error/)
+    expect(delivered[0].model![0].content).toMatch(
+      /failed: ended its turn without an answer \(model_error · faux\/faux-1 · fixture provider error\)/,
+    )
     expect(
       await resumed.harness.commit(
         async (tx) =>

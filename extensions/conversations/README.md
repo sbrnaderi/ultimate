@@ -144,7 +144,7 @@ footer names the project file to edit. Two actions back it:
   setting. It refuses while a project setting applies. Writes reuse onboarding's atomic settings writer
   (`extensions/onboarding/settings.ts`).
 
-`summary-model-ref.ts` parses the value without node imports, so the web facet shares it: only a recognized final
+`lib/model-ref.ts` parses the value without node imports, so the web facet shares it: only a recognized final
 thinking level is stripped, so model ids may contain colons (`x-ai/grok-4.3:batch:high`).
 
 It provides the `conversations` service: `subject(id)` returns a conversation's current title, summary and feature,

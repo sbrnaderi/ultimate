@@ -1,6 +1,7 @@
 import type { Context, JsonValue } from '@earendil-works/chord'
 import { awaitWithContext, BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { Type } from '@earendil-works/pi-ai'
+import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai'
 import type { Message, Models, ModelThinkingLevel } from '@earendil-works/pi-ai'
 import { estimateMessageTokens, estimateTextTokens } from '@earendil-works/pi-ai/utils/estimate'
 import {
@@ -752,6 +753,7 @@ type PromptInput = {
   prompt: string
   images?: BranchImage[]
   isolated?: boolean
+  /** The model to run, validated as available; absent keeps the source's current one. */
   model?: ModelRef
   thinkingLevel?: ModelThinkingLevel
 }
@@ -818,12 +820,52 @@ function branchedText(branch: number, from: number, at: number, intent: string, 
 }
 
 /**
+ * Validate the model a branch is asked to run, with the conversation configure endpoint's policy: it must exist and
+ * be available (a clear error names it); a requested thinking level must suit it. A level inherited from the source
+ * is followed down by clamping it to the new model, as configure does. Returns the level to set.
+ */
+async function checkBranchModel(
+  host: ExtensionHost,
+  model: ModelRef,
+  requested: ModelThinkingLevel | undefined,
+  inherited: ModelThinkingLevel | undefined,
+): Promise<ModelThinkingLevel | undefined> {
+  if (
+    !(await host.models()).some(
+      (info) => info.available && info.provider === model.provider && info.id === model.modelId,
+    )
+  )
+    throw new Error(`Model ${model.provider}/${model.modelId} is not available`)
+  const run = host.model(model)
+  if (!run) throw new Error(`Model ${model.provider}/${model.modelId} is not available`)
+  if (requested !== undefined && !getSupportedThinkingLevels(run).includes(requested))
+    throw new Error(
+      `${model.provider}/${model.modelId} does not support thinking level ${requested}`,
+    )
+  return requested ?? (inherited === undefined ? undefined : clampThinkingLevel(run, inherited))
+}
+
+/**
  * Fork `from` at `at` (default: its latest entry) into a branch whose first input is the prompt. The tree's root gets
  * the prompt node after the fork point, so the branch reads its prompt once, as its own input.
  */
 export async function startBranch(host: ExtensionHost, input: BranchInput, ctx: Context) {
   if (!input.prompt.trim()) throw new Error('A branch needs a prompt')
   const from = input.from as ConversationId
+  // A branch is new work, not a rewind: it follows the source's agent as it is now. The fork copies `pi.agent` as
+  // of its entry and `configure` appends no entry, so without this the copy predates a model set on the source.
+  const source = await host.harness().snapshot(AgentDoc, from, ctx)
+  const chosen = input.model
+    ? {
+        model: input.model,
+        thinkingLevel: await checkBranchModel(
+          host,
+          input.model,
+          input.thinkingLevel,
+          source?.thinkingLevel,
+        ),
+      }
+    : { model: source?.model, thinkingLevel: source?.thinkingLevel }
   const main = await head(host)
   const roots = await rootsOf(host, ctx)
   // A first branch needs a stored entry to fork from. An empty root has none until it got familiar with the project.
@@ -837,7 +879,9 @@ export async function startBranch(host: ExtensionHost, input: BranchInput, ctx: 
         )
       await tx.appendEntry(from, { kind: 'pi.reset', head: 'self' })
     }, ctx)
-  const id = await host.harness().commit((tx) => forkBranch(host, tx, input, main, roots), ctx)
+  const id = await host
+    .harness()
+    .commit((tx) => forkBranch(host, tx, input, chosen, main, roots), ctx)
   host.harness().resume()
   return { id }
 }
@@ -847,6 +891,7 @@ async function forkBranch(
   host: ExtensionHost,
   tx: Tx,
   input: BranchInput,
+  chosen: { model?: ModelRef; thinkingLevel?: ModelThinkingLevel },
   main: string | undefined,
   roots: readonly number[],
 ) {
@@ -888,8 +933,9 @@ async function forkBranch(
   const fork = await tx.forkConversation(from, at, { ownership: { kind: 'ownerless' } })
   await configure(tx, fork.id, {
     cwd: host.projectRoot,
-    ...(input.model ? { model: input.model } : {}),
-    ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
+    ...(chosen.model === undefined ? {} : { model: chosen.model }),
+    // `undefined` leaves the fork's copy alone; every set level, including `off`, replaces it.
+    ...(chosen.thinkingLevel === undefined ? {} : { thinkingLevel: chosen.thinkingLevel }),
   })
   // A branch gets ordinary tools whatever its source ran with.
   const agent = await tx.doc(AgentDoc, fork.id)

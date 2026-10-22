@@ -102,7 +102,9 @@ Model-facing messages identify standing senders as `#12 (@ultimate)` and the lan
 conversations stay `#id`, and user replies say `user`. Before delivery, standing recipients are refreshed from their
 current definitions, including numeric-address messages and automatic replies.
 
-The deferred `branch { prompt, root?, isolated?: true }` tool is offered only to definitions that name it.
+The deferred `branch { prompt, root?, isolated?: true, model? }` tool is offered only to definitions that name it.
+`model` is `"provider/modelId"`, optional `:thinking`: the branch runs on it (validated as available; the error names
+it) instead of inheriting the root's current model.
 It chooses the explicit root, otherwise the caller's tree root, otherwise the only root. Ambiguous or missing roots
 produce an error listing the available ids. It forks the root's tally tip through lineage, attributes the tally's branch
 line to the caller, and sends the first input as a board message with replies enabled. It returns the branch id and message id.

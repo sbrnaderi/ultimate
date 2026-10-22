@@ -246,6 +246,11 @@ async function fixture(
       return fauxAssistantMessage([fauxToolCall('hold', {})], { stopReason: 'toolUse' })
     if (last.role === 'user' && text.startsWith('Message from') && text.includes('NOANSWER'))
       return fauxAssistantMessage([])
+    if (last.role === 'user' && text.startsWith('Message from') && text.includes('MODELERROR'))
+      return fauxAssistantMessage([], {
+        stopReason: 'error',
+        errorMessage: '402 "no remaining credits"',
+      })
     if (last.role === 'user' && text.startsWith('Message from') && text.includes('\nASK'))
       return fauxAssistantMessage([fauxText('Scope changed. Proceed?\n1. Yes\n2. No')])
     return fauxAssistantMessage([fauxText(last.role === 'toolResult' ? 'Done' : `Answer: ${text}`)])
@@ -1214,6 +1219,56 @@ async function branched(f: Awaited<ReturnType<typeof fixture>>) {
   await settled()
   return { id, branch, from, later, settled }
 }
+it('runs a branch on the model `branch` names, and reports one that is unavailable', async () => {
+  const f = await fixture()
+  const tool = (await f.opened.root.agent(context)).deferred.find((t) => t.name === 'branch')!
+  await f.opened.harness.commit(async (tx) => {
+    ;(await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots = [1]
+    await configure(tx, f.opened.root.id, { modelTools: { add: [tool] } })
+  }, context)
+  await f.opened.root.submit(
+    {
+      type: 'input',
+      content:
+        'BRANCH ' + JSON.stringify({ prompt: 'Pinned', isolated: false, model: 'faux/faux-1:off' }),
+    },
+    context,
+  )
+  await until(async () => (await replies(f)).length === 1)
+  const id = (await f.log())!.messages[0].to as number
+  const agent = await (await f.opened.harness.conversation(id as ConversationId, context))!.agent(
+    context,
+  )
+  expect(agent).toMatchObject({
+    model: { provider: 'faux', modelId: 'faux-1' },
+    thinkingLevel: 'off',
+  })
+  // A model that is not available fails the call by name and starts no branch.
+  await f.opened.root.submit(
+    {
+      type: 'input',
+      content:
+        'BRANCH ' + JSON.stringify({ prompt: 'Dead', isolated: false, model: 'nowhere/gpt-9' }),
+    },
+    context,
+  )
+  await until(() =>
+    f.observed.some((text) => text.includes('Model nowhere/gpt-9 is not available')),
+  )
+  // The failed call sent no first message, so no second branch exists.
+  expect((await f.log())!.messages.some((m) => m.text === 'Dead')).toBe(false)
+  expect((await f.log())!.messages.filter((m) => m.from === 1)).toHaveLength(1)
+})
+it('names the model and the provider error in a failure reply', async () => {
+  const f = await fixture()
+  await f.send('@scout', 'MODELERROR')
+  await until(async () => (await replies(f)).length === 1)
+  const error = (await f.log())!.messages[0].error
+  expect(error).toBe(
+    'ended its turn without an answer (model_error · faux/faux-1 · 402 "no remaining credits")',
+  )
+  expect((await replies(f))[0].data).toMatchObject({ failed: true })
+})
 it('forwards images into a new branch with its prompt', async () => {
   const f = await fixture()
   const tool = (await f.opened.root.agent(context)).deferred.find((t) => t.name === 'branch')!

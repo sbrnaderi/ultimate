@@ -13,7 +13,7 @@ import { api, cn, errorMessage, useDialog, useModels } from '@/sdk'
 import { ModelRow } from '../models/ui.tsx'
 import { SetSummaryModelAction, SummaryModelAction } from './refs.ts'
 import type { SummaryModelSetting } from './refs.ts'
-import { parseSummaryModel } from './summary-model-ref.ts'
+import { parseModelRef as parseSummaryModel } from '../../lib/model-ref.ts'
 export const summaryModelDialog = 'conversations.summary-model'
 
 /**

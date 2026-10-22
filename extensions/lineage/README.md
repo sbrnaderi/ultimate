@@ -5,7 +5,10 @@ document, tools and model-facing text, where agents and stored entries already u
 
 - **Branch** (action `branch`
   `{ from, at?, prompt, images?, isolated?, model?, thinkingLevel? }` → `{ id }`). It forks the source at `at` (default: its latest entry) as an
-  ownerless conversation in the project root, optionally isolated in its own worktree. It inherits the source context
+  ownerless conversation in the project root, optionally isolated in its own worktree. Its agent is the source's
+  current `pi.agent`, or the `model`/`thinkingLevel` given (`model` is validated as available, as the configure
+  endpoint does; the error names it): a fork copies `pi.agent` as of its entry and `configure` appends no entry, so
+  without reading the source live, the copy would predate a model set on it since. It inherits the source context
   (or, from a root with memories, starts at a memory brief: see Project memory), then the durable `lineage.prompt` task submits the prompt and images as its first
   input. Doc `lineage.branch` holds `{ from, at, intent }`; `inputAt` is when the branch was asked for, not inherited
   activity. The fork happens before the tree root receives a model-visible `lineage.branched` node

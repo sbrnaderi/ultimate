@@ -26,6 +26,7 @@ import type {
   TaskRuntime,
   Tx,
 } from '@earendil-works/pi-durable'
+import type { AssistantMessage } from '@earendil-works/pi-ai'
 import type { ActionContext } from '../../server/actions.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { Handoff, WorkspacesApi } from '../workspaces/api.ts'
@@ -35,6 +36,8 @@ import { Standing, Subagents, SubagentsApi } from '../subagents/api.ts'
 import { locate, postAction, selfAddress } from '../../lib/remote.ts'
 import { discoverAgents } from '../../lib/agents.ts'
 import { parseDecisions } from '../../lib/decisions.ts'
+import { parseModelRef } from '../../lib/model-ref.ts'
+import { failedTurn, failureSentence } from '../../lib/failures.ts'
 import { LineageApi, Roots } from '../lineage/api.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import type { ResponseReceipt } from '../conversations/summary.ts'
@@ -525,9 +528,23 @@ function delivery(host: ExtensionHost) {
             model?.role !== 'assistant' ||
             model.stopReason === 'error' ||
             model.stopReason === 'aborted'
-          const error = failed
-            ? `ended its turn without an answer (${settled.status === 'unanswered' ? settled.reason : settled.status})`
-            : undefined
+          let error: string | undefined
+          if (failed) {
+            // Name the model and the provider's own message when the run died on an error turn, so a dead
+            // provider reads differently from a flaky agent without opening the trace.
+            const failure =
+              model?.role === 'assistant' && model.stopReason === 'error'
+                ? model
+                : settled.status === 'unanswered' && settled.entry !== undefined
+                  ? ((await failedTurn(tx, m.to as ConversationId, settled.entry))?.model?.[0] as
+                      | AssistantMessage
+                      | undefined)
+                  : undefined
+            error = failureSentence(
+              settled.status === 'unanswered' ? settled.reason : settled.status,
+              failure,
+            )
+          }
           const original = (await tx.doc(Board, ROOT_CONVERSATION_ID)).messages.find(
             (item) => item.id === m.id,
           )
@@ -1285,6 +1302,12 @@ export default function board(host: ExtensionHost) {
           root: Type.Optional(Type.Number()),
           isolated: Type.Optional(Type.Boolean()),
           images: Type.Optional(imagesParameter),
+          model: Type.Optional(
+            Type.String({
+              description:
+                'Run the branch on this model instead of the root\'s: "provider/modelId", optional ":thinking" level. Must be available; omit to inherit.',
+            }),
+          ),
         }),
         // Lineage atomically deduplicates the fork; Sent deduplicates its first message.
         replay: 'safe',
@@ -1310,6 +1333,12 @@ export default function board(host: ExtensionHost) {
             )
             const coordinator = definitions.find((definition) => definition.name === 'coordinator')
             if (!coordinator) throw new Error('Missing coordinator definition')
+            // A named model arrives as `provider/id[:thinking]`, the shape `summaryModel` settings use.
+            const parsed = input.model === undefined ? undefined : parseModelRef(input.model)
+            if (input.model !== undefined && !parsed)
+              throw new Error(
+                `model must be "provider/id", optionally ":thinking": ${JSON.stringify(input.model)}`,
+              )
             const branch = await lineage.branch(
               {
                 from: root,
@@ -1318,6 +1347,12 @@ export default function board(host: ExtensionHost) {
                 deliver: false,
                 by: api.conversationId,
                 receipt: { taskId: api.taskId, callId: api.callId },
+                ...(parsed
+                  ? {
+                      model: { provider: parsed.provider, modelId: parsed.id },
+                      ...(parsed.thinking ? { thinkingLevel: parsed.thinking } : {}),
+                    }
+                  : {}),
               },
               ctx,
             )

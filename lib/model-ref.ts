@@ -4,9 +4,9 @@ const levels: readonly string[] = ['off', 'minimal', 'low', 'medium', 'high', 'x
 
 /**
  * `provider/id[:thinking]`, without fuzzy matching; undefined when malformed. Only a recognized final thinking level is
- * stripped, so model ids may contain colons. Browser-safe: the web facet shares it.
+ * stripped, so model ids may contain colons. Browser-safe: web code and extensions' server code share it.
  */
-export function parseSummaryModel(value: string) {
+export function parseModelRef(value: string) {
   const colon = value.lastIndexOf(':')
   const thinking =
     colon !== -1 && levels.includes(value.slice(colon + 1)) ? value.slice(colon + 1) : undefined

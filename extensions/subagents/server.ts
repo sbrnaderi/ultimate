@@ -42,6 +42,7 @@ import {
 } from '../../lib/agents.ts'
 import { createChild, started } from './children.ts'
 import { implementAction } from '../../lib/actions.ts'
+import { failedTurn, failureSentence } from '../../lib/failures.ts'
 import { exec } from '../../lib/exec.ts'
 import { shortTitle } from '../../lib/title.ts'
 import { WorkspacesApi } from '../workspaces/api.ts'
@@ -80,8 +81,7 @@ const answered = (message: AssistantMessage | undefined) =>
   message.stopReason !== 'aborted' &&
   message.stopReason !== 'error' &&
   textOf(message).trim() !== ''
-const unanswered = (message: AssistantMessage | undefined) =>
-  `ended its turn without an answer${message?.stopReason === 'aborted' || message?.stopReason === 'error' ? ` (${message.stopReason})` : ''}`
+const unanswered = (message: AssistantMessage | undefined) => failureSentence(undefined, message)
 const answerText = (message: AssistantMessage | undefined) =>
   `Returned model: ${message?.provider && message?.model ? `${message.provider}/${message.model}` : 'unknown'}\n${textOf(message)}`
 const reportText = (id: ConversationId, agent: string, message: AssistantMessage | undefined) =>
@@ -210,26 +210,9 @@ function createReporter() {
                   }
                   cursor = page.next
                 } while (cursor)
-              }
-              let cursor: Cursor | undefined
-              while (settled.reason === 'model_error') {
-                const page = await tx.scanEntries(
-                  { conversationId: child.id, minEntryId: settled.entry, order: 'ascending' },
-                  500,
-                  cursor,
-                )
-                const failure = page.items.find(
-                  (entry) =>
-                    entry.kind === AssistantEntry.kind &&
-                    entry.model?.[0]?.role === 'assistant' &&
-                    entry.model[0].stopReason === 'error',
-                )
-                if (failure) {
-                  failureId = failure.id
-                  break
-                }
-                cursor = page.next
-                if (cursor === undefined) break
+              } else {
+                const failure = await failedTurn(tx, child.id, failedEntry)
+                if (failure) failureId = failure.id
               }
               if (failureId === undefined) throw new Error('Provider failure has no run identity')
               action.retryRequest =
@@ -246,8 +229,20 @@ function createReporter() {
               }
             }
             if (settled.status === 'unanswered' && settled.reason !== 'aborted') {
-              const failure = settled.reason
-              return { status: 'running', checkpoint: { phase: 'report', report: failure } }
+              // Name the model and what the provider said, so a dead provider reads differently from a flaky agent.
+              const failure =
+                settled.reason === 'model_error' && settled.entry !== undefined
+                  ? ((await failedTurn(tx, child.id, settled.entry))?.model?.[0] as
+                      | AssistantMessage
+                      | undefined)
+                  : undefined
+              return {
+                status: 'running',
+                checkpoint: {
+                  phase: 'report',
+                  report: failureSentence(settled.reason, failure),
+                },
+              }
             }
             // A parent stop aborts this task before the input, so this abort came from the child's
             // own conversation: whatever answers its next input there still belongs to the parent.

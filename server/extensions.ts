@@ -45,6 +45,7 @@ export type ExtensionHost = Pick<
   | 'scanSubmissions'
   | 'faux'
   | 'models'
+  | 'model'
   | 'skills'
   | 'restart'
 > & {
@@ -360,6 +361,7 @@ export async function loadExtensions(
       host.scanSubmissions(query, limit, cursor, caller),
     faux: host.faux,
     models: () => host.models(),
+    model: host.model,
     skills: (cwd) => host.skills(cwd),
     restart: (approved) => host.restart(approved),
     harness: runtime.harness,

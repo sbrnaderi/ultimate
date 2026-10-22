@@ -538,6 +538,47 @@ it.concurrent('defaults a branch to its source’s configuration', async () => {
   const followed = await branchFrom(server, { from: other.id, prompt: 'Follow B', isolated: false })
   expect(await agentOf(followed)).toMatchObject({ model, thinkingLevel: 'high' })
   await settled(server, followed)
+
+  // The source's agent can change without a new entry (`configure` appends none), and the fork's `pi.agent` copy
+  // is as of its entry: an inherited branch still follows the source's model as it is now.
+  const moved = { provider: 'faux', modelId: 'faux-1' }
+  await (await server.harness.conversation(other.id, context))!.configure(
+    { model: moved, thinkingLevel: 'low' },
+    context,
+  )
+  const current = await branchFrom(server, {
+    from: other.id,
+    prompt: 'Follow the move',
+    isolated: false,
+  })
+  expect(await agentOf(current)).toMatchObject({ model: moved, thinkingLevel: 'low' })
+  await settled(server, current)
+})
+
+it.concurrent('runs a branch on the model it is given, and refuses one that is unavailable', async () => {
+  const { server } = await fixture()
+  const agentOf = async (id: ConversationId) =>
+    (await server.harness.conversation(id, context))!.agent(context)
+  // The source's current model is a different one, so an explicit ref must beat the inheritance.
+  const source = { provider: 'faux', modelId: 'faux-1' }
+  await seedTally(server.harness)
+  const branch = await branchFrom(server, {
+    from: 1,
+    prompt: 'Pinned work',
+    isolated: false,
+    model: source,
+  })
+  expect(await agentOf(branch)).toMatchObject({ model: source })
+  await settled(server, branch)
+
+  // A model that is not in the available list errors by name, and forks nothing.
+  const missing = await post(server, '/api/extensions/lineage/actions/branch', {
+    args: { from: 1, prompt: 'Dead provider', model: { provider: 'nowhere', modelId: 'gpt-9' } },
+  })
+  expect(missing.data.error).toContain('Model nowhere/gpt-9 is not available')
+  expect(
+    (await post(server, '/api/extensions/lineage/actions/info', { args: null })).data.result.roots,
+  ).toEqual([1])
 })
 
 it.concurrent('resolves the root per tree for notes, the prompt and compaction', async () => {

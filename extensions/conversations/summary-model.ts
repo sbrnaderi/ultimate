@@ -3,7 +3,7 @@ import type { ModelThinkingLevel } from '@earendil-works/pi-ai'
 import type { JsonObject } from '@earendil-works/pi-durable'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
-import { parseSummaryModel } from './summary-model-ref.ts'
+import { parseModelRef as parseSummaryModel } from '../../lib/model-ref.ts'
 
 /** Titles, summaries and reply summaries use this model unless settings name another. */
 const DEFAULT_SUMMARY_MODEL = 'openai-codex/gpt-6-luna:medium'
