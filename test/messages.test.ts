@@ -1,6 +1,7 @@
 import { eventHost, temp, removeTemp, until, fauxServer, linkDependencies } from './helpers.ts'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { hostname } from 'node:os'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { join, resolve } from 'node:path'
@@ -1716,7 +1717,10 @@ async function remoteFixture(url?: string) {
   })
   return f
 }
-const from = { project: 'poe2-rust', machine: 'rog' }
+// The reply routes through `locate`, which asks the cloud register about any machine but this one; the
+// fixture's other Ultimate runs locally, so the sender claims this machine's name (as `machineName`
+// resolves it under faux).
+const from = { project: 'poe2-rust', machine: hostname() }
 it("delivers another Ultimate's message to @ultimate only, labelled as it, once per key", async () => {
   const other = await otherUltimate(() => [200, { result: 7 }])
   const f = await remoteFixture(other.url)
@@ -1733,7 +1737,7 @@ it("delivers another Ultimate's message to @ultimate only, labelled as it, once 
   expect(f.observed.filter((text) => text.includes('Start a branch that adds X'))).toHaveLength(1)
   const delivered = f.observed.find((text) => text.includes('Start a branch'))!
   expect(delivered).toContain(
-    "Message from @ultimate@poe2-rust on rog (another project's Ultimate, not the user):",
+    `Message from @ultimate@poe2-rust on ${from.machine} (another project's Ultimate, not the user):`,
   )
   expect(f.observed.some((text) => text.includes('Start a branch') && text !== delivered)).toBe(
     false,
