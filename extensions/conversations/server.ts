@@ -218,6 +218,12 @@ export async function subject(
   }
 }
 
+/** Read the concluded set without leaving the caller's transaction. */
+export async function concludedIn(tx: Tx): Promise<Set<ConversationId>> {
+  const ids = (await tx.doc(UiState, ROOT_CONVERSATION_ID))['ext.conversations.concluded']
+  return new Set(Array.isArray(ids) ? (ids as ConversationId[]) : [])
+}
+
 /** Tells each top-level conversation which other conversations work in this project. */
 export default (host: ExtensionHost) => {
   // Extension points this extension declares, resolved where they are called; declared here for the catalogue.
@@ -226,6 +232,7 @@ export default (host: ExtensionHost) => {
   host.implement(ConversationsApi, {
     subject: (id, caller) => subject(host, id, caller),
     concludeIn: (tx, ids) => concludeIn(host, tx, ids),
+    concludedIn,
     summaryModel: () => summaryModel(host),
     summaryModelStatus: () => summaryModelStatus(host),
     requestSummary: (tx, id, request, model) => requestSummary(tx, host, id, request, model),
@@ -254,7 +261,7 @@ export default (host: ExtensionHost) => {
     hooks: [
       ...summaries.hooks,
       // Pi upstream: @earendil-works/pi-durable@1.4.0 — patched transactional beforeInput hook. Drop when Pi ships input-placement hooks.
-      // Any input that starts a run (typed, board message or reply, report, automation) brings the conversation and its
+      // Any input that starts a run (typed, message or reply, report, automation) brings the conversation and its
       // concluded ancestors back, in the commit that places it. Writes (notes) start no run and never get here.
       hook(GenerationTask, {
         beforeInput: async (_input, api) => {

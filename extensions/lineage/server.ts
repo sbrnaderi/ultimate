@@ -44,8 +44,8 @@ import { Branch, Branched, LineageApi, Rooted, Roots } from './api.ts'
 import { ConversationsApi, Release, Trees } from '../conversations/api.ts'
 import { Standing, Started, Subagents } from '../subagents/api.ts'
 
-/** The fields of a Board message the landed-branch check reads. */
-type BoardRow = { from: unknown; reply: boolean; state: string }
+/** The fields of a message the landed-branch check reads. */
+type MessageRow = { from: unknown; reply: boolean; state: string }
 import { CompactAction, ForgetAction, RecentAction, TallyDoc } from './refs.ts'
 import {
   applyMemoryOps,
@@ -643,10 +643,10 @@ function lineage(host: ExtensionHost) {
   /** Inside `tx`: whether `id` is busy or has input queued, waits on a reply it asked for, or has a subagent running. */
   async function keepsWorking(tx: Tx, id: ConversationId) {
     if ((await tx.doc(LiveDoc, id)).run || (await tx.doc(InboxDoc, id)).items.length) return true
-    // Read by kind: board needs lineage, so lineage cannot import board.
-    const board = host.doc('board')
+    // Read by kind: messages depends on lineage, so lineage cannot import messages.
+    const log = host.doc('board')
     const messages = (
-      board && ((await tx.doc(board, ROOT_CONVERSATION_ID)) as { messages?: BoardRow[] })
+      log && ((await tx.doc(log, ROOT_CONVERSATION_ID)) as { messages?: MessageRow[] })
     )?.messages
     if (
       messages?.some(
@@ -777,15 +777,6 @@ const WokenReceipt = defineDocFamily<{ task?: number }, null>({
   initial: () => ({}),
 })
 
-// Commits with creation, closing the gap before the tool records its memo.
-const RootReceipts = defineDoc<{ roots: Record<string, number> }>({
-  kind: 'lineage.root-receipts',
-  checkpointWhen: () => false,
-  version: 1,
-  scope: 'task',
-  initial: () => ({ roots: {} }),
-})
-
 export const BranchReceipts = defineDoc<{ branches: Record<string, number> }>({
   kind: 'lineage.branch-receipts',
   checkpointWhen: () => false,
@@ -868,16 +859,14 @@ export async function startBranch(host: ExtensionHost, input: BranchInput, ctx: 
     : { model: source?.model, thinkingLevel: source?.thinkingLevel }
   const main = await head(host)
   const roots = await rootsOf(host, ctx)
-  // A first branch needs a stored entry to fork from. An empty root has none until it got familiar with the project.
+  // A first branch needs a stored entry to fork from. An empty root becomes a tally at that entry: its history builds
+  // up from branches and landings, while branches start from its memory.
   if (input.at === undefined)
     await host.harness().commit(async (tx) => {
       if (!(await tx.conversation(from))) throw new Error(`No conversation #${from}`)
       if ((await tx.scanEntries({ conversationId: from }, 1)).items.length) return
-      if (roots.includes(from))
-        throw new Error(
-          `#${from} is an empty root: let it get familiar with the project first, then branch from what it learned`,
-        )
-      await tx.appendEntry(from, { kind: 'pi.reset', head: 'self' })
+      const entry = await tx.appendEntry(from, { kind: 'pi.reset', head: 'self' })
+      if (roots.includes(from)) (await tx.doc(Tally, from)).since = entry.id
     }, ctx)
   const id = await host
     .harness()
@@ -1352,7 +1341,7 @@ export const actions = {
     }, context)
     return withCompare(host.projectRoot, scanned.events, scanned.older)
   }),
-  /** `{id, instructions?}`: compact root tally `id`, as @ultimate's `compact_tally` does. */
+  /** `{id, instructions?}`: compact root tally `id`, for the history footer and the palette. */
   compact: implementAction(CompactAction, async (args, { host }) => {
     const id = conversationArg(args)
     const instructions = (args as { instructions?: unknown }).instructions
@@ -1406,12 +1395,21 @@ async function refuseTally(tx: Tx, id: ConversationId) {
 }
 
 export default function lineageExtension(host: ExtensionHost) {
-  /** The listed root whose memory a tool call reads or writes: `root` when given, else the caller's tree root. */
+  /**
+   * The listed root whose memory a tool call reads or writes: `root` when given, else the caller's tree root, else
+   * (for a standing agent, in no tree) the project's only root.
+   */
   const memoryRoot = async (caller: ConversationId, root: number | undefined, ctx: Context) => {
-    const id = root ?? (await rootOf(host, caller, ctx))
-    if (id === undefined) throw new Error(`#${caller} is in no tree; name a root`)
-    if (!(await rootsOf(host, ctx)).includes(id as ConversationId))
-      throw new Error(`#${id} is not a listed root`)
+    const roots = await rootsOf(host, ctx)
+    const id =
+      root ?? (await rootOf(host, caller, ctx)) ?? (roots.length === 1 ? roots[0] : undefined)
+    if (id === undefined)
+      throw new Error(
+        roots.length === 0
+          ? `#${caller} is in no tree and the project has no root yet`
+          : `#${caller} is in no tree and the project has several roots; name one of ${roots.map((r) => `#${r}`).join(', ')}`,
+      )
+    if (!roots.includes(id as ConversationId)) throw new Error(`#${id} is not a listed root`)
     return id
   }
   /**
@@ -1653,58 +1651,6 @@ export default function lineageExtension(host: ExtensionHost) {
         },
       }),
       defineTool({
-        name: 'new_root',
-        deferred: true,
-        description:
-          'Create an empty project root with a title. Read the project, then write its first tally with seed_tally.',
-        parameters: Type.Object({ title: Type.String({ minLength: 1 }) }),
-        // The receipt commits with creation; the memo and receipt both reuse the root on replay.
-        replay: 'safe',
-        async execute({ title }, api, ctx) {
-          if (!title.trim()) throw new Error('A root needs a title')
-          let id = await api.memo<number>('root-id', ctx)
-          if (id === undefined) {
-            const agent = await (await host
-              .harness()
-              .conversation(ROOT_CONVERSATION_ID, ctx))!.agent(ctx)
-            const created = await api.commit(async (tx) => {
-              const receipt = await tx.doc(RootReceipts, api.taskId)
-              if (receipt.roots[api.callId] !== undefined) return receipt.roots[api.callId]
-              const roots = await tx.doc(Roots, ROOT_CONVERSATION_ID)
-              const root = await tx.createConversation({ ownership: { kind: 'ownerless' } })
-              await configure(tx, root.id, {
-                cwd: host.projectRoot,
-                ...(agent.model ? { model: agent.model } : {}),
-                ...(agent.thinkingLevel ? { thinkingLevel: agent.thinkingLevel } : {}),
-              })
-              roots.roots.push(root.id)
-              // Called by its title until its summary names it, like a branch by its intent.
-              ;(await tx.doc(host.metadata, root.id)).title = intentLine(title)
-              await host.emit(tx, Rooted, { id: root.id, intent: title })
-              receipt.roots[api.callId] = root.id
-              return root.id
-            }, ctx)
-            id = await api.memo('root-id', created, ctx)
-          }
-          return { output: [{ type: 'text', text: JSON.stringify({ id }) }] }
-        },
-      }),
-      defineTool({
-        name: 'compact_tally',
-        deferred: true,
-        description:
-          'Summarize older content in a listed tally root, keeping recent entries verbatim; short tallies may stay unchanged. Use instructions to guide the summary. To record or correct a standing decision, use remember. Full history stays in storage. Returns the compaction task id.',
-        parameters: Type.Object({
-          root: Type.Integer({ minimum: 1 }),
-          instructions: Type.Optional(Type.String()),
-        }),
-        async execute({ root, instructions }, api, ctx) {
-          const taskId = await api.commit((tx) => compactTally(tx, root, instructions), ctx)
-          host.harness().resume()
-          return { output: [{ type: 'text', text: JSON.stringify({ taskId }) }] }
-        },
-      }),
-      defineTool({
         name: 'compact',
         deferred: true,
         description:
@@ -1727,55 +1673,9 @@ export default function lineageExtension(host: ExtensionHost) {
         },
       }),
       defineTool({
-        name: 'seed_tally',
-        deferred: true,
-        description:
-          "Write an empty root's first tally from your reading of the project, with a breadcrumb to this conversation. Refuses roots with history.",
-        parameters: Type.Object({
-          root: Type.Integer({ minimum: 1 }),
-          text: Type.String({ minLength: 1 }),
-        }),
-        // The source is memoised before placement; the same genesis is recognised inside the write transaction.
-        replay: 'safe',
-        async execute({ root, text }, api, ctx) {
-          if (root === api.conversationId) throw new Error('A conversation cannot seed itself')
-          let at = await api.memo<number>('seed-source', ctx)
-          if (at === undefined) {
-            const latest = await api.commit(
-              async (tx) =>
-                (await tx.scanEntries({ conversationId: api.conversationId }, 1)).items[0]?.id,
-              ctx,
-            )
-            if (latest === undefined) throw new Error('The caller has no reading to seed from')
-            at = await api.memo('seed-source', latest, ctx)
-          }
-          const content = `<tally from="#${api.conversationId}/${at}">\n${text}\n</tally>`
-          await api.commit(async (tx) => {
-            const roots = await tx.doc(Roots, ROOT_CONVERSATION_ID)
-            if (!roots.roots.includes(root)) throw new Error(`#${root} is not a listed root`)
-            const id = root as ConversationId
-            const tally = await tx.doc(Tally, id)
-            const latest = (await tx.scanEntries({ conversationId: id }, 1)).items[0]
-            const genesis =
-              tally.since === undefined ? undefined : await tx.entry(tally.since as EntryId)
-            if (genesis?.kind === 'pi.reset' && genesis.model?.[0]?.content === content) return
-            if (tally.since !== undefined) throw new Error(`#${root} is already a tally`)
-            if (latest) throw new Error(`#${root} has entries; seed_tally needs an empty root`)
-            const entry = await tx.appendEntry(id, {
-              kind: 'pi.reset',
-              head: 'self',
-              data: { lineage: { tally: true } },
-              model: [{ role: 'user', content, timestamp: Date.now() }],
-            })
-            tally.since = entry.id
-          }, ctx)
-          return { output: [{ type: 'text', text: `Seeded the tally in #${root}.` }] }
-        },
-      }),
-      defineTool({
         name: 'memory',
         description:
-          "Read your project's memory, kept in your tree's root: without `read`, the index (one line per memory); with `read: slug`, that memory in full with its source. `root` reads another root's.",
+          "Read your project's memory, kept in your tree's root: without `read`, the index (one line per memory); with `read: slug`, that memory in full with its source. Outside a tree it reads the project's only root; `root` reads another root's.",
         parameters: Type.Object({
           read: Type.Optional(Type.String({ minLength: 1 })),
           root: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -1807,7 +1707,7 @@ export default function lineageExtension(host: ExtensionHost) {
         name: 'remember',
         deferred: true,
         description:
-          "Change a root's project memory in one atomic batch: ops are {op:'add', slug, kind: 'decision'|'fact'|'lesson', line, body, source?}, {op:'update', slug, kind?, line?, body?, source?} and {op:'delete', slug}. Slugs are kebab-case, lines one line of at most 120 characters, bodies at most 2000, source `#<conversation>/<entry>`; at most 150 memories. Any invalid op refuses the whole batch. `root` defaults to your tree's root.",
+          "Change a root's project memory in one atomic batch: ops are {op:'add', slug, kind: 'decision'|'fact'|'lesson', line, body, source?}, {op:'update', slug, kind?, line?, body?, source?} and {op:'delete', slug}. Slugs are kebab-case, lines one line of at most 120 characters, bodies at most 2000, source `#<conversation>/<entry>`; at most 150 memories. Any invalid op refuses the whole batch. `root` defaults to your tree's root, or outside a tree to the project's only root.",
         parameters: Type.Object({
           root: Type.Optional(Type.Integer({ minimum: 1 })),
           ops: Type.Array(Type.Object({}, { additionalProperties: true }), { minItems: 1 }),

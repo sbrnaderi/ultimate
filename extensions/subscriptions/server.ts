@@ -28,7 +28,7 @@ import {
 import type { Group, GroupProcess } from '../../lib/process-group.ts'
 import { readSecret, validateName } from '../../lib/secrets.ts'
 import { SubagentsApi } from '../subagents/api.ts'
-import { BoardApi } from '../board/api.ts'
+import { MessagesApi } from '../messages/api.ts'
 import { SubscriptionsApi } from './api.ts'
 import {
   CreateAction,
@@ -348,7 +348,7 @@ function backend(host: ExtensionHost) {
                 : `Subscription ${sub.id} "${sub.title}" ${kind}: ${text}`
           if (kind === 'escalated')
             await host
-              .need(BoardApi)
+              .need(MessagesApi)
               .send(
                 sub.conversationId,
                 { to: '@ultimate', text: content, reply: false },
@@ -998,11 +998,11 @@ export const actions = {
     (args, { host }) => backend(host).operate(input(args, 'delete')) as Promise<{ id: string }>,
   ),
 }
-/** The Subscriptions surface polls these every 2 s while it is on screen. */
+/** The Subscriptions panel polls these every 2 s while it is open. */
 export const pollActions = ['list', 'log', 'script']
 export default function subscriptions(host: ExtensionHost) {
   host.need(SubagentsApi)
-  host.need(BoardApi)
+  host.need(MessagesApi)
   const api = backend(host)
   host.implement(SubscriptionsApi, {
     start: async (id) => (await api.operate({ action: 'start', id }), api.status(id)),
