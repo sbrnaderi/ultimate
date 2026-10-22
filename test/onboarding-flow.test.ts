@@ -1,15 +1,83 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import type { ConversationId } from '@earendil-works/pi-durable'
+import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
+import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
+import type { ConversationId, JsonObject } from '@earendil-works/pi-durable'
 import { ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { expect, it } from 'vitest'
-import { Board } from '../extensions/board/api.ts'
+import { Memory } from '../extensions/lineage/memory.ts'
+import { Messages } from '../extensions/messages/api.ts'
 import { Tally } from '../extensions/lineage/server.ts'
 import { Starts } from '../extensions/onboarding/server.ts'
 import { context } from '../server/harness.ts'
 import { fauxServer, post, removeTemp, temp, until } from './helpers.ts'
 
-it('onboards once per root with facts, choices, reading, a seeded tally and a coordinator', async () => {
+const text = (content: unknown) =>
+  typeof content === 'string'
+    ? content
+    : (content as { type: string; text?: string }[]).map((part) => part.text ?? '').join('')
+const call = (name: string, args: JsonObject) =>
+  fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' })
+
+/**
+ * @ultimate's side of onboarding, scripted as the instructions ask: one setup card per choice, then read the README,
+ * write the first memories, ask what to do first, and branch the answer. Any other request gets a plain answer.
+ */
+function onboarding(project: string): FauxResponseFactory {
+  return (transcript) => {
+    const messages = transcript.messages
+    const last = messages.at(-1)!
+    const at = messages.findIndex(
+      (message) =>
+        message.role === 'user' && text(message.content).startsWith('Onboarding started.'),
+    )
+    if (at < 0) return fauxAssistantMessage('Done.')
+    const start = text(messages[at].content)
+    const since = messages.slice(at)
+    const chosen = since.filter(
+      (message) => message.role === 'user' && text(message.content).startsWith('Setup choice ('),
+    ).length
+    const said = text(last.content)
+    if (
+      last.role === 'user' &&
+      (said.startsWith('Onboarding started.') || said.startsWith('Setup choice ('))
+    )
+      return chosen < 3
+        ? call('setup', { card: ['extensions', 'project', 'git'][chosen] })
+        : call('read', { path: join(project, 'README.md') })
+    if (last.role === 'toolResult' && last.toolName === 'read')
+      return call('remember', {
+        root: 1,
+        ops: [
+          {
+            op: 'add',
+            slug: 'project-overview',
+            kind: 'fact',
+            line: 'A sample project',
+            body: 'Start at its README.',
+          },
+          {
+            op: 'add',
+            slug: 'user-instructions',
+            kind: 'decision',
+            line: 'The user’s onboarding instructions, verbatim',
+            body: start.split('User instructions:\n')[1],
+          },
+        ],
+      })
+    if (last.role === 'toolResult' && last.toolName === 'remember')
+      return fauxAssistantMessage('The first memories are written. What should we do first?')
+    if (
+      last.role === 'user' &&
+      since.some((message) => message.role === 'toolResult' && message.toolName === 'remember') &&
+      !said.startsWith('Reply from')
+    )
+      return call('branch', { root: 1, prompt: said, isolated: false })
+    return fauxAssistantMessage('Waiting.')
+  }
+}
+
+it('onboards once per root with facts, choices, reading, first memories and a coordinator', async () => {
   const home = await temp('ultimate-onboarding-flow-')
   const project = join(home, 'project')
   await mkdir(join(project, '.ultimate'), { recursive: true })
@@ -23,6 +91,12 @@ it('onboards once per root with facts, choices, reading, a seeded tally and a co
     firstRun: true,
     localSetup: false,
   })
+  const route = onboarding(project)
+  const answer: FauxResponseFactory = (...args) => {
+    server.host.faux!.appendResponses([answer])
+    return route(...args)
+  }
+  server.host.faux!.setResponses([answer])
   try {
     const instructions = 'Focus on the API.\nKeep this verbatim.'
     const start = () =>
@@ -73,18 +147,13 @@ it('onboards once per root with facts, choices, reading, a seeded tally and a co
     }
     const completed = JSON.stringify(await entries())
     expect(completed).toContain('README.md')
-    expect(completed).toContain('seed_tally')
     expect(completed).toContain('What should we do first?')
-    expect(
-      (await server.harness.snapshot(Tally, ROOT_CONVERSATION_ID, context))?.since,
-    ).toBeDefined()
-    const rootEntries = (await server.root.viewState(context)).value.entries
-    expect(
-      rootEntries.some(
-        (entry) =>
-          entry.kind === 'pi.reset' && JSON.stringify(entry).includes('Keep this verbatim.'),
-      ),
-    ).toBe(true)
+    // The first memories land in the still-empty root, the user's instructions verbatim among them.
+    const memories = (await server.harness.snapshot(Memory, ROOT_CONVERSATION_ID, context))!
+      .memories
+    expect(Object.keys(memories).toSorted()).toEqual(['project-overview', 'user-instructions'])
+    expect(memories['user-instructions'].body).toBe(instructions)
+    expect((await server.root.viewState(context)).value.entries).toEqual([])
     expect((await start()).data.result).toEqual({ id })
     await (await server.harness.conversation(id, context))!.submit(
       { type: 'input', content: 'Explore a first feature' },
@@ -92,9 +161,9 @@ it('onboards once per root with facts, choices, reading, a seeded tally and a co
     )
     await server.harness.waitForIdle(context)
     await until(async () => {
-      const board = await server.harness.snapshot(Board, ROOT_CONVERSATION_ID, context)
+      const log = await server.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context)
       return (
-        board?.messages.some(
+        log?.messages.some(
           (message) =>
             message.from === id &&
             message.text === 'Explore a first feature' &&
@@ -102,6 +171,22 @@ it('onboards once per root with facts, choices, reading, a seeded tally and a co
         ) ?? false
       )
     })
+    // The first branch makes the root a tally and starts from the memory brief.
+    const branch = (await server.harness.snapshot(
+      Messages,
+      ROOT_CONVERSATION_ID,
+      context,
+    ))!.messages.find(
+      (message) => message.from === id && message.text === 'Explore a first feature',
+    )!.to as ConversationId
+    expect(
+      (await server.harness.snapshot(Tally, ROOT_CONVERSATION_ID, context))?.since,
+    ).toBeDefined()
+    const brief = (
+      await (await server.harness.conversation(branch, context))!.context(context)
+    ).messages.find((message) => message.role === 'user')
+    expect(JSON.stringify(brief)).toContain('<project_memory root=\\"#1\\">')
+    expect(JSON.stringify(brief)).toContain('user-instructions')
   } finally {
     await server.close()
     await removeTemp(home)

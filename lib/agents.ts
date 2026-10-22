@@ -8,7 +8,7 @@ import { parseFrontmatter, resolveCliModel } from '@earendil-works/pi-coding-age
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 import type { Source } from '../server/project.ts'
 // oxlint-disable-next-line no-restricted-imports -- agent discovery follows the core project trust decision
-import { useProjectSetup } from '../server/project-setup.ts'
+import { projectDecision, useProjectSetup } from '../server/project-setup.ts'
 
 export interface AgentDefinition {
   name: string
@@ -18,6 +18,7 @@ export interface AgentDefinition {
   model?: { provider: string; modelId: string }
   thinking?: ModelThinkingLevel
   tools?: string[]
+  denyTools?: string[]
   isolate?: 'none' | 'worktree'
   /** A standing agent: one conversation per project, started on first use. */
   resident?: boolean
@@ -33,7 +34,7 @@ export function definitionAgent(
   parent: Agent,
   modelRuntime: ModelRuntime,
   {
-    excludeTools = [],
+    excludeTools: excluded = [],
     excludeExtensions = [],
     model: overrideModel,
     thinking: overrideThinking,
@@ -44,6 +45,7 @@ export function definitionAgent(
     thinking?: ModelThinkingLevel
   } = {},
 ): AgentChange {
+  const excludeTools = [...excluded, ...(definition?.denyTools ?? [])]
   const ref = overrideModel ?? definition?.model ?? parent.model
   const model = ref && modelRuntime.getModel(ref.provider, ref.modelId)
   const thinking = overrideThinking ?? definition?.thinking ?? parent.thinkingLevel
@@ -52,7 +54,12 @@ export function definitionAgent(
   ]
   return {
     modelTools: {
-      add: tools.filter((tool) => tool.deferred && definition?.tools?.includes(tool.name)),
+      add: tools.filter(
+        (tool) =>
+          tool.deferred &&
+          !excludeTools.includes(tool.name) &&
+          definition?.tools?.includes(tool.name),
+      ),
     },
     tools: tools.filter(
       (tool) =>
@@ -73,6 +80,8 @@ export interface AgentDiscovery {
   errors: { name: string; path: string; source: Source; error: string }[]
   /** User and project files that replace a built-in definition whole instead of extending it with `addTools`. */
   replaced: { name: string; path: string; source: Source }[]
+  /** The user's choice on the project's `.ultimate/` setup; its definitions apply only once trusted. */
+  projectSetup: 'trusted' | 'declined' | 'undecided'
 }
 // Pi's levels; `satisfies` fails the type check when Pi adds or drops one.
 const levels = {
@@ -90,19 +99,26 @@ const fields = new Set([
   'model',
   'thinking',
   'tools',
+  'denyTools',
   'isolate',
   'resident',
   'onFailure',
   'fast',
 ])
 
-/** The settings a definition or overlay may set: every field but `name`, `tools` and `addTools`. */
+/** The settings a definition or overlay may set; `denyTools` is additive when merged. */
 function parseSettings(frontmatter: Record<string, unknown>): Partial<
-  Pick<AgentDefinition, 'description' | 'thinking' | 'isolate' | 'resident' | 'onFailure' | 'fast'>
+  Pick<
+    AgentDefinition,
+    'description' | 'thinking' | 'isolate' | 'resident' | 'onFailure' | 'fast' | 'denyTools'
+  >
 > & {
   model?: string
 } {
-  const { description, model, thinking, isolate, resident, onFailure, fast } = frontmatter
+  const { description, model, thinking, isolate, resident, onFailure, fast, denyTools } =
+    frontmatter
+  if (denyTools !== undefined && !isTools(denyTools))
+    throw new Error('denyTools must be a list of tool names')
   if (description !== undefined && (typeof description !== 'string' || !description.trim()))
     throw new Error('description is required')
   if (thinking !== undefined && (typeof thinking !== 'string' || !Object.hasOwn(levels, thinking)))
@@ -124,6 +140,7 @@ function parseSettings(frontmatter: Record<string, unknown>): Partial<
     ...(resident !== undefined ? { resident: resident } : {}),
     ...(onFailure ? { onFailure: onFailure } : {}),
     ...(fast !== undefined ? { fast } : {}),
+    ...(denyTools !== undefined ? { denyTools } : {}),
   }
 }
 
@@ -182,8 +199,8 @@ function resolveModel(
 
 /**
  * An overlay, marked by `addTools` (empty when it only changes settings): it extends the definition of the same name
- * an earlier folder holds. Its settings (every field but `tools`) replace that definition's, its `addTools` join its
- * tool list, and its body is appended to its instructions, so the earlier file stays the source of the instructions.
+ * an earlier folder holds. Its settings replace that definition's, its `addTools` join its tool list, its `denyTools`
+ * join its deny list, and its body is appended to its instructions, so the earlier file stays the instructions' source.
  */
 export function parseOverlay(text: string, path: string, modelRuntime: ModelRuntime) {
   const { frontmatter, body } = parseFrontmatter(text)
@@ -265,6 +282,13 @@ export async function discoverAgents(
           definitions.set(overlay.name, {
             ...base,
             ...overlay.settings,
+            ...(overlay.settings.denyTools
+              ? {
+                  denyTools: [
+                    ...new Set([...(base.denyTools ?? []), ...overlay.settings.denyTools]),
+                  ],
+                }
+              : {}),
             // A base that inherits every tool already has them; only a list grows.
             ...(base.tools ? { tools: [...new Set([...base.tools, ...overlay.addTools])] } : {}),
             instructions: overlay.instructions
@@ -284,7 +308,13 @@ export async function discoverAgents(
       }
     }
   }
-  return { definitions: [...definitions.values()], errors, replaced }
+  const decision = projectDecision(projectRoot, userHome)
+  return {
+    definitions: [...definitions.values()],
+    errors,
+    replaced,
+    projectSetup: decision === true ? 'trusted' : decision === false ? 'declined' : 'undecided',
+  }
 }
 
 /** The fields a definition file's frontmatter may carry besides its name; `model` is `provider/id`. */
@@ -293,11 +323,16 @@ export interface DefinitionFields {
   model?: string
   thinking?: string
   tools?: string[]
+  denyTools?: string[]
   isolate?: 'none' | 'worktree'
   resident?: boolean
   onFailure?: 'diagnose' | 'fix'
   fast?: boolean
 }
+
+/** A flow list of tool names; in a flow list, commas and brackets end an item too. */
+const toolList = (tools: string[]) =>
+  `[${tools.map((tool) => (/^[\w.-]+$/.test(tool) ? scalar(tool) : JSON.stringify(tool))).join(', ')}]`
 
 /** A YAML scalar: plain when it reads back as the same string, else JSON, which YAML reads as a quoted string. */
 function scalar(value: string) {
@@ -320,12 +355,8 @@ export function serializeDefinition(
     `description: ${scalar(frontmatter.description.trim())}`,
     ...(frontmatter.model ? [`model: ${scalar(frontmatter.model)}`] : []),
     ...(frontmatter.thinking ? [`thinking: ${scalar(frontmatter.thinking)}`] : []),
-    // In a flow list, commas and brackets end an item too.
-    ...(frontmatter.tools
-      ? [
-          `tools: [${frontmatter.tools.map((tool) => (/^[\w.-]+$/.test(tool) ? scalar(tool) : JSON.stringify(tool))).join(', ')}]`,
-        ]
-      : []),
+    ...(frontmatter.tools ? [`tools: ${toolList(frontmatter.tools)}`] : []),
+    ...(frontmatter.denyTools?.length ? [`denyTools: ${toolList(frontmatter.denyTools)}`] : []),
     ...(frontmatter.isolate === 'worktree' ? ['isolate: worktree'] : []),
     ...(frontmatter.resident !== undefined ? [`resident: ${frontmatter.resident}`] : []),
     ...(frontmatter.onFailure ? [`onFailure: ${frontmatter.onFailure}`] : []),

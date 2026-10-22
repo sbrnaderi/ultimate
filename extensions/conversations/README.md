@@ -80,7 +80,7 @@ The `GenerationTask.onYield` hook schedules a background observer. It waits for 
 only counts an exchange when an input submission completed with that answer (not an intermediate yield).
 The [summary model](#summary-model) describes each completed reply in one `activity` line, including subagent replies,
 in a background task. It judges nothing: whether a conversation waits, is done or failed comes from committed records
-(board's `conversationState`).
+(messages’ `conversationState`).
 Top-level conversations also get a title and summary on exchanges 1, 4, 7, and so on, in the same request.
 For a top-level non-root conversation in a lineage tree, that same request produces an abstract after every completed
 exchange, independent of the title/summary cadence. It uses the original branch intent, previous abstract and transcript:
@@ -126,7 +126,7 @@ task. A task that finds no available model before it chose one settles quietly t
 the project is chosen) names the model for titles, summaries, reply summaries, question extraction and tree abstracts as
 `provider/id[:thinking]`, an exact provider and model id with an optional Pi thinking level, clamped to what the model
 supports (medium when omitted). Unset, it is `DEFAULT_SUMMARY_MODEL`: GPT-6 Luna with medium thinking through the
-current OpenAI provider (including Sign in with ChatGPT). In faux mode, the unset default is `faux/faux-1` with thinking off. `summary-model.ts` reads it when a request is considered and again when a
+current OpenAI provider (including Sign in with ChatGPT). `summary-model.ts` reads it when a request is considered and again when a
 task starts asking, so changes apply to the next request without a restart. Each task stores the resolved
 `{ provider, id, thinking }` in its `model` memo before asking: a resumed task asks the same model even after the
 setting changed. A malformed value shows one notice and turns summaries off; a well-formed model that is unknown or

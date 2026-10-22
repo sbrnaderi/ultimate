@@ -2,7 +2,9 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { previewEnv, remember, stopped } from '../extensions/instance/server.ts'
+import type { ConversationId } from '@earendil-works/pi-durable'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import { previewEnv, previewWorkspace, remember, stopped } from '../extensions/instance/server.ts'
 import { at, label } from '../extensions/instance/links.ts'
 
 const homes: string[] = []
@@ -24,53 +26,67 @@ const preview = (port: number, conversationId = 1) => ({
   id: `p${port}-${conversationId}`,
   url: `http://127.0.0.1:${port}`,
   conversationId,
-  faux: true,
 })
 
-it.each([false, true])(
-  'isolates preview cloud environment and host identity (faux: %s)',
-  (faux) => {
-    const parent = {
-      PATH: '/bin',
-      ULTIMATE_SUPERVISED: '1',
-      ULTIMATE_PUBLIC_URL: 'https://parent.example',
-      ULTIMATE_GENERATION: '7',
-      ULTIMATE_PREVIOUS_BUILD: 'parent-build',
-      ULTIMATE_HOME: '/parent/state',
-      ULTIMATE_PROJECT: '/parent/project',
-      HOME: '/parent/user',
-      ULTIMATE_PORT: '4747',
-      ULTIMATE_FAUX: '1',
-      ULTIMATE_NO_OPEN: '0',
-      ULTIMATE_INSTANCE_OWNER: '111',
-      ULTIMATE_CLOUD_URL: 'wss://parent.example/sync',
-      ULTIMATE_CLOUD_TOKEN: 'parent-token',
-      ULTIMATE_CLOUD_MACHINE: 'parent-machine',
-    }
-    const before = { ...parent }
-    const child = previewEnv(parent, {
-      home: '/preview/state',
-      project: '/preview/project',
-      userHome: '/preview/user',
-      ownerPid: 222,
-      faux,
-    })
-    expect(child).not.toHaveProperty('ULTIMATE_CLOUD_URL')
-    expect(child).not.toHaveProperty('ULTIMATE_CLOUD_TOKEN')
-    expect(child).not.toHaveProperty('ULTIMATE_CLOUD_MACHINE')
-    expect(child).toEqual({
-      PATH: '/bin',
-      ULTIMATE_HOME: '/preview/state',
-      ULTIMATE_PROJECT: '/preview/project',
-      HOME: '/preview/user',
-      ULTIMATE_PORT: '0',
-      ULTIMATE_NO_OPEN: '1',
-      ULTIMATE_INSTANCE_OWNER: '222',
-      ...(faux ? { ULTIMATE_FAUX: '1' } : {}),
-    })
-    expect(parent).toEqual(before)
-  },
-)
+it('previews the nearest owner worktree of a subagent, else the host checkout', async () => {
+  // Branch 10 has a worktree; 11 is its subagent and 12 a subagent of that. 20 owns 21, neither isolated.
+  const owners: Record<number, number> = { 11: 10, 12: 11, 21: 20 }
+  const branch = { path: '/worktrees/10', state: 'ready' }
+  const host = {
+    harness: () => ({
+      commit: async <T>(run: (tx: unknown) => Promise<T>) =>
+        run({
+          conversation: async (id: ConversationId) =>
+            owners[id] === undefined ? { id } : { id, owner: { conversationId: owners[id] } },
+        }),
+    }),
+  }
+  const workspaces = { get: async (id: ConversationId) => (id === 10 ? branch : undefined) }
+  const resolve = (id: number) =>
+    previewWorkspace(host as never, workspaces as never, id as ConversationId, BACKGROUND_CONTEXT)
+  expect(await resolve(11)).toBe(branch)
+  expect(await resolve(12)).toBe(branch)
+  expect(await resolve(21)).toBeUndefined()
+})
+
+it('isolates preview cloud environment and host identity', () => {
+  const parent = {
+    PATH: '/bin',
+    ULTIMATE_SUPERVISED: '1',
+    ULTIMATE_PUBLIC_URL: 'https://parent.example',
+    ULTIMATE_GENERATION: '7',
+    ULTIMATE_PREVIOUS_BUILD: 'parent-build',
+    ULTIMATE_HOME: '/parent/state',
+    ULTIMATE_PROJECT: '/parent/project',
+    HOME: '/parent/user',
+    ULTIMATE_PORT: '4747',
+    ULTIMATE_NO_OPEN: '0',
+    ULTIMATE_INSTANCE_OWNER: '111',
+    ULTIMATE_CLOUD_URL: 'wss://parent.example/sync',
+    ULTIMATE_CLOUD_TOKEN: 'parent-token',
+    ULTIMATE_CLOUD_MACHINE: 'parent-machine',
+  }
+  const before = { ...parent }
+  const child = previewEnv(parent, {
+    home: '/preview/state',
+    project: '/preview/project',
+    userHome: '/preview/user',
+    ownerPid: 222,
+  })
+  expect(child).not.toHaveProperty('ULTIMATE_CLOUD_URL')
+  expect(child).not.toHaveProperty('ULTIMATE_CLOUD_TOKEN')
+  expect(child).not.toHaveProperty('ULTIMATE_CLOUD_MACHINE')
+  expect(child).toEqual({
+    PATH: '/bin',
+    ULTIMATE_HOME: '/preview/state',
+    ULTIMATE_PROJECT: '/preview/project',
+    HOME: '/preview/user',
+    ULTIMATE_PORT: '0',
+    ULTIMATE_NO_OPEN: '1',
+    ULTIMATE_INSTANCE_OWNER: '222',
+  })
+  expect(parent).toEqual(before)
+})
 
 it('remembers stopped previews across restarts, one per port, the last 50', async () => {
   const home = await mkdtemp(join(tmpdir(), 'ultimate-previews-'))

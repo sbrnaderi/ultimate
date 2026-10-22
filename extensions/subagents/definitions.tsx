@@ -222,6 +222,8 @@ interface Draft {
   model: ModelRef | null
   thinking: string | null
   tools: string[] | null
+  /** Kept as read: the form has no control for it, and a save must not drop it. */
+  denyTools: string[]
   resident: boolean
   isolate: 'none' | 'worktree'
   onFailure: 'diagnose' | 'fix' | null
@@ -234,6 +236,7 @@ const draftOf = (definition?: Shown['definition'], name = ''): Draft => ({
   model: definition?.model ?? null,
   thinking: definition?.thinking ?? null,
   tools: definition?.tools ?? null,
+  denyTools: definition?.denyTools ?? [],
   resident: definition?.resident ?? false,
   isolate: definition?.isolate ?? 'none',
   onFailure: definition?.onFailure ?? null,
@@ -261,7 +264,9 @@ function Form({
   const [creating, setCreating] = useState(!shown?.definition)
   const source = creating ? undefined : shown?.source
   const [scope, setScope] = useState<Scope>(
-    source === 'user' || (source !== 'project' && !discovery.projectLocal) ? 'user' : 'project',
+    source === 'user' || (source !== 'project' && discovery.projectSetup !== 'trusted')
+      ? 'user'
+      : 'project',
   )
   const [pending, setPending] = useState<'save' | 'delete'>()
   const [confirming, setConfirming] = useState(false)
@@ -314,6 +319,7 @@ function Form({
           ...(draft.model ? { model: `${draft.model.provider}/${draft.model.modelId}` } : {}),
           ...(draft.thinking ? { thinking: draft.thinking } : {}),
           ...(draft.tools ? { tools: draft.tools } : {}),
+          ...(draft.denyTools.length ? { denyTools: draft.denyTools } : {}),
           resident: draft.resident,
           ...(draft.isolate === 'worktree' ? { isolate: 'worktree' } : {}),
           ...(draft.onFailure ? { onFailure: draft.onFailure } : {}),
@@ -363,7 +369,7 @@ function Form({
             onClick={() => {
               setCreating(true)
               set({ name: `${draft.name}-copy` })
-              if (!discovery.projectLocal) setScope('user')
+              if (discovery.projectSetup !== 'trusted') setScope('user')
             }}
             size="sm"
             title="Start a new definition from this one"
@@ -520,16 +526,17 @@ function Form({
           <Segmented
             label="Save to"
             onChange={(next) => {
-              if (next === 'project' && !discovery.projectLocal) return
+              if (next === 'project' && discovery.projectSetup !== 'trusted') return
               setScope(next)
             }}
             options={[
               {
                 value: 'project',
                 label: 'project',
-                title: discovery.projectLocal
-                  ? "This project's .ultimate/agents, shared with its team"
-                  : "Choose this project's local setup first (Extensions panel)",
+                title:
+                  discovery.projectSetup === 'trusted'
+                    ? "This project's .ultimate/agents, shared with its team"
+                    : "Choose this project's local setup first (Extensions panel)",
               },
               { value: 'user', label: 'user', title: 'Your ~/.ultimate/agents, in every project' },
             ]}
