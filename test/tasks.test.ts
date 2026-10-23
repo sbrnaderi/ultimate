@@ -23,8 +23,12 @@ it('a report notice names what failed', () => {
     conversationId: 4 as ConversationId,
   } as ReportTask
   expect(
-    reportMessage(new Error('cut off 5 times'), { type: 'task_parked', task, extension: 'board' }),
-  ).toBe('task parked: task #12 (pi.generation) in #4, extension board. Error: cut off 5 times')
+    reportMessage(new Error('cut off 5 times'), {
+      type: 'task_parked',
+      task,
+      extension: 'messages',
+    }),
+  ).toBe('task parked: task #12 (pi.generation) in #4, extension messages. Error: cut off 5 times')
   expect(
     reportMessage(new Error('boom'), { type: 'task_faulted', task, reason: 'restart_limit' }),
   ).toBe('task faulted (restart limit): task #12 (pi.generation) in #4. Error: boom')
@@ -38,14 +42,13 @@ it('a report notice names what failed', () => {
 
 it('compaction overrides per model, with Pi settings replacing them field by field', () => {
   const settings = SettingsManager.inMemory({
-    compaction: { modelOverrides: { 'faux/faux-1': { keepRecentTokens: 9000 } } },
+    compaction: { modelOverrides: { 'openai-codex/gpt-6.1-sol': { keepRecentTokens: 9000 } } },
   })
   const { modelOverrides } = createHarnessSettings(settings, () => []).compaction!
-  expect(modelOverrides?.['faux/faux-1']).toEqual({
-    reserveTokens: 16384,
+  expect(modelOverrides?.['openai-codex/gpt-6.1-sol']).toEqual({
+    reserveTokens: 32768,
     keepRecentTokens: 9000,
-    backgroundTokens: 32768,
+    backgroundTokens: 65536,
   })
   expect(modelOverrides?.['claude-code/claude-opus-5-5']?.backgroundTokens).toBe(131072)
-  expect(modelOverrides?.['openai-codex/gpt-6.1-sol']?.reserveTokens).toBe(32768)
 })

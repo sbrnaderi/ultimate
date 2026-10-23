@@ -20,6 +20,7 @@ export type Definition = {
   model?: ModelRef
   thinking?: string
   tools?: string[]
+  denyTools?: string[]
   isolate?: 'none' | 'worktree'
   resident?: boolean
   onFailure?: 'diagnose' | 'fix'
@@ -35,8 +36,8 @@ export type Discovery = {
   main: { model?: ModelRef; thinking?: string; tools: { name: string; description: string }[] }
   /** The folder each scope saves to. */
   scopes: Record<Scope, string>
-  /** Whether the project's setup is local, which the project scope needs. */
-  projectLocal: boolean
+  /** The user's choice on the project's `.ultimate/` setup; the project scope needs it trusted. */
+  projectSetup: 'trusted' | 'declined' | 'undecided'
 }
 /** The definition of one name: the one that applies, a later file of that name that fails to parse, the raw file. */
 export type Shown = {
@@ -54,6 +55,7 @@ export type DefinitionFields = {
   model?: string
   thinking?: string
   tools?: string[]
+  denyTools?: string[]
   isolate?: 'none' | 'worktree'
   resident?: boolean
   onFailure?: 'diagnose' | 'fix'

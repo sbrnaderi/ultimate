@@ -1,3 +1,4 @@
+import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
 import { apis, eventHost, temp, until } from './helpers.ts'
 import { afterEach, expect, it, vi } from 'vitest'
 import { awaitWithContext } from '@earendil-works/chord/context'
@@ -14,11 +15,11 @@ import type { ConversationsService } from '../extensions/conversations/api.ts'
 import { emit } from '../server/events.ts'
 import { accountResponse, askSummaryModel } from '../extensions/conversations/summary.ts'
 import { summaryModel } from '../extensions/conversations/summary-model.ts'
-import boardExtension from '../extensions/board/server.ts'
-import { Asked, Board } from '../extensions/board/api.ts'
+import messagesExtension from '../extensions/messages/server.ts'
+import { Asked, Messages } from '../extensions/messages/api.ts'
 import questionsExtension, {
   actions,
-  BoardQuestions,
+  MessageQuestions,
   decisionQuestions,
   parseQuestions,
   QUESTIONS_SYSTEM,
@@ -38,20 +39,25 @@ function gate() {
   return { promise, release: resolve }
 }
 async function fixture() {
-  const home = await temp('ultimate-board-questions-')
-  const prepared = await prepareHarness({ home, ultimateRoot: home, userHome: home, faux: true })
+  const home = await temp('ultimate-messages-questions-')
+  const prepared = await prepareHarness({
+    home,
+    ultimateRoot: home,
+    userHome: home,
+    faux: fauxProvider(),
+  })
   let opened: OpenHost
   const services = new Map<string, unknown>()
   const openers: (() => Promise<void>)[] = []
   const closers: (() => Promise<void>)[] = []
-  // Board's `board.asked` reaches questions' reactor through a real event log, as on a server.
+  // Messages’ `board.asked` reaches questions' reactor through a real event log, as on a server.
   const events = eventHost(() => opened.harness, 'questions')
   openers.push(async () => void (await events.start()))
   closers.push(async () => void (await events.stop()))
   const host = {
     ...prepared,
     userHome: home,
-    projectSettings: async () => ({}),
+    projectSettings: async () => ({ summaryModel: 'faux/faux-1:off' }),
     harness: () => opened.harness,
     ...apis(services),
     doc: () => undefined,
@@ -68,10 +74,10 @@ async function fixture() {
     askSummaryModel,
     accountResponse,
   } satisfies Partial<ConversationsService>)
-  // Board's core dependencies: no standing agents to list, no worktrees.
+  // Messages’ core dependencies: no standing agents to list, no worktrees.
   services.set('subagents', { residents: async () => [] } satisfies Partial<SubagentsService>)
   services.set('workspaces', { doc: Workspaces })
-  prepared.registry.install(boardExtension(host))
+  prepared.registry.install(messagesExtension(host))
   const extension = questionsExtension(host)
   let beforeCommit: ReturnType<typeof gate> | undefined
   let committing = false
@@ -147,8 +153,8 @@ async function fixture() {
     await opened.close()
   }
   await open()
-  const log = () => opened.harness.snapshot(Board, ROOT_CONVERSATION_ID, context)
-  const state = () => opened.harness.snapshot(BoardQuestions, ROOT_CONVERSATION_ID, context)
+  const log = () => opened.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context)
+  const state = () => opened.harness.snapshot(MessageQuestions, ROOT_CONVERSATION_ID, context)
   // Settled: every event reacted to and every task done.
   const settled = () =>
     until(
@@ -260,7 +266,7 @@ it('extracts once only for reply-expected agent messages to the user', async () 
   expect(f.extract).toHaveBeenCalledTimes(1)
 })
 
-it('posts exactly one Board reply atomically, wakes the sender, and rejects unknown or duplicate answers', async () => {
+it('posts exactly one reply atomically, wakes the sender, and rejects unknown or duplicate answers', async () => {
   const f = await fixture()
   const id = await f.send()
   await f.settled()
@@ -342,7 +348,7 @@ it('keeps a card answerable across typed input and discards an extraction its me
   const stale = await f.send()
   await until(() => f.extract.mock.calls.length === 2)
   await f.opened.harness.commit(async (tx) => {
-    ;(await tx.doc(Board, ROOT_CONVERSATION_ID)).messages.find((m) => m.id === stale)!.state =
+    ;(await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.find((m) => m.id === stale)!.state =
       'answered'
   }, context)
   hold.release()
@@ -384,12 +390,12 @@ it('resumes a memoized response during reopen and never extracts again after com
   expect((await f.state())!.requested).toEqual([id])
 })
 
-it('prunes extraction state to messages still in the Board log', async () => {
+it('prunes extraction state to messages still in the Messages log', async () => {
   const f = await fixture()
   const id = await f.send()
   await f.settled()
   await f.opened.harness.commit(async (tx) => {
-    ;(await tx.doc(Board, ROOT_CONVERSATION_ID)).messages = []
+    ;(await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages = []
   }, context)
   const next = await f.send()
   await f.settled()
@@ -485,7 +491,7 @@ it('dismisses one open question with a one-way note that starts no run, leaving 
   await expect(f.answer(first.id)).rejects.toThrow('These questions are no longer open')
 })
 
-it('does not gate explicit reply-expected Board asks without question punctuation', async () => {
+it('does not gate explicit reply-expected Messages asks without question punctuation', async () => {
   const f = await fixture()
   await f.send({ text: 'Please confirm whether to keep it running.' })
   await f.settled()

@@ -1,6 +1,11 @@
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { Type } from '@earendil-works/pi-ai'
-import { fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
+import {
+  fauxAssistantMessage,
+  fauxText,
+  fauxToolCall,
+  fauxProvider,
+} from '@earendil-works/pi-ai/providers/faux'
 import {
   defineExtension,
   defineTask,
@@ -48,7 +53,12 @@ const streamTask = (released: Promise<void>) =>
 /** A faux harness with the pause extension and a `work` tool that runs until the test releases it, as bash would. */
 async function fixture(home?: string) {
   home ??= await temp('ultimate-pause-')
-  const prepared = await prepareHarness({ ultimateRoot: home, userHome: home, home, faux: true })
+  const prepared = await prepareHarness({
+    ultimateRoot: home,
+    userHome: home,
+    home,
+    faux: fauxProvider(),
+  })
   let finish: (() => void) | undefined
   let finished = 0
   const background = Promise.withResolvers<void>()
@@ -344,7 +354,7 @@ it('leaves no note when the run handed over during the drain and its successor w
 /** A task record as `running()` reads it: it decides by task kind and checkpoint phase only. */
 const at = (kind: string, phase: string) => ({ kind, state: { checkpoint: { phase } } })
 
-it('treats board deliveries as passive: their triage model call counts through the gate', () => {
+it('treats message deliveries as passive: their triage model call counts through the gate', () => {
   expect(passive(at('board.delivery', 'deliver'))).toBe(true)
   expect(passive(at('board.delivery', 'reply'))).toBe(true)
   expect(passive(at('ultimate.subagent-reporter', 'deliver'))).toBe(true)

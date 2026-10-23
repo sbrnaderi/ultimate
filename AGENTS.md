@@ -14,9 +14,10 @@ A project is a forest of conversation trees, like commit histories.
   calls a tally **context**; code, tools and model text call it "tally". The footer shows the memory's estimated tokens (what a branch starts from) and **Talk to @ultimate**; the sidebar
   shows each root heading its tree with its last three events (landings, notes, branches, compactions).
   Start a project with @ultimate: Continue on Get ready or **Set up with @ultimate** on Start here. It handles setup
-  cards, reads the project and seeds the first tally; optional focus becomes instructions. It maintains memory
-  with `remember` and the memory review (`extensions/lineage/README.md`), seeds empty roots with `seed_tally`, and reshapes tallies with `compact_tally` without deleting history.
-  Only a user request for independent work warrants `new_root`, seeded from its reading.
+  cards, reads the project and writes its first memories with `remember`; optional focus becomes instructions,
+  kept verbatim as a memory. The tally then builds up from branches and landings. @ultimate maintains memory with
+  `remember` and the memory review (`extensions/lineage/README.md`); the user can compact a tally from its footer
+  or ⌘K. A project has one root: independent work goes into branches.
   Roots and standing agents are never concluded or cleared, only compacted.
 - **A branch** is a feature, a fix, an experiment. @ultimate picks a root by reading its tally, then starts a
   coordinator branch that starts from its memory brief (or, without memories, its tally) before its prompt. A branch is never a subagent.
@@ -36,8 +37,8 @@ A project is a forest of conversation trees, like commit histories.
 - **Conclude** a conversation when its work is done; it stays readable and can be resumed. A branch whose submission
   lands is concluded for you once its report run is idle, unless it still waits on a reply or a subagent runs.
 - **UI polish lands when the user says so.** For small look-and-feel work (an animation, a loading state, spacing,
-  a card), keep a faux preview of the branch's checkout running (`instance start` with `faux: true`), give the user
-  its URL, and iterate there: commit each round in the branch, but do not `workspace submit` until the user has
+  a card), keep a preview of the branch's checkout running (`instance start`: a clean instance on the configured
+  models, which you seed by prompting it like a user), give the user its URL, and iterate there: commit each round in the branch, but do not `workspace submit` until the user has
   clicked around and approved it. Larger UI features and anything with behaviour behind it land as usual.
 
 `extensions/lineage/README.md` has the mechanics.
@@ -69,7 +70,7 @@ guide to writing extensions, and copy the closest existing one (`status-line`, `
 
 - [Running the server](docs/running.md): before starting, debugging or testing a server or core swap.
 - [Worktrees and integration](docs/worktrees.md): before previewing an isolate, landing or recovering a rejected push.
-- [Discovery and settings](docs/settings.md): before changing configuration, trust, resources or `summaryModel` (titles, summaries, reply summaries, question extraction and tree abstracts; faux uses `faux/faux-1:off` by default).
+- [Discovery and settings](docs/settings.md): before changing configuration, trust, resources or `summaryModel` (titles, summaries, reply summaries, question extraction and tree abstracts).
 - [Durability](docs/durability.md): before changing persistence, replay or durable UI state.
 - [Extension mechanics and introspection](docs/extensions.md): before wiring facets, documents, events or runtime inspection.
 - [Subagents](docs/subagents.md): before delegating, changing definitions or configuring the review team.
@@ -97,7 +98,7 @@ See [integration details](docs/worktrees.md#standing-permission-to-push-this-rep
   properties), relative imports end in `.ts`.
 - Core server/web contracts live in `shared/protocol.ts`; extension-local types live with their extension.
 - Pin `@earendil-works/*` packages to exact versions; Pi Durable is experimental.
-- Checks: `pnpm check` (format, lint, types) and the tests covering your change must pass before a commit; the lander runs every suite. Keep `pnpm test` fast: no real-time waits, no spawned processes (those go to `test/e2e`), and fix or delete a flaky test rather than skipping it or raising its timeout. Lint enforces this with `ultimate/no-test-timeout` and `ultimate/no-real-wait-in-fast-tests` (`test/e2e` is exempt); justified exceptions need a `fast-test-reason:` comment. Use the real-deadline `until` from `test/helpers.ts` (`ultimate/no-local-test-polling`). `ultimate/no-retired-ui` keeps retired UI labels and the board surface out of extensions and web code.
+- Checks: `pnpm check` (format, lint, types) and the tests covering your change must pass before a commit; the lander runs every suite. Keep `pnpm test` fast: no real-time waits, no spawned processes (those go to `test/e2e`), and fix or delete a flaky test rather than skipping it or raising its timeout. Lint enforces this with `ultimate/no-test-timeout` and `ultimate/no-real-wait-in-fast-tests` (`test/e2e` is exempt); justified exceptions need a `fast-test-reason:` comment. Use the real-deadline `until` from `test/helpers.ts` (`ultimate/no-local-test-polling`). `ultimate/no-retired-ui` keeps retired UI labels and surfaces out of extensions and web code.
 - Every user-visible result is designed, not dumped: status and outcomes (a subagent report, a landing, a failure) get a
   renderer that matches the existing cards (see `extensions/subagents/messages.tsx`, `extensions/workspaces/log.tsx`),
   never plain Markdown in a message. Look at the running app and recent screenshots first, write the expected look into

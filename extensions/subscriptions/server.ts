@@ -16,6 +16,8 @@ import {
 import type { Agent, ConversationId, Tx } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { implementAction } from '../../lib/actions.ts'
+import { actingAs } from '../../lib/acting-as.ts'
+import { LineageApi } from '../lineage/api.ts'
 import { discoverAgents } from '../../lib/agents.ts'
 import type { AgentDefinition } from '../../lib/agents.ts'
 import {
@@ -28,7 +30,7 @@ import {
 import type { Group, GroupProcess } from '../../lib/process-group.ts'
 import { readSecret, validateName } from '../../lib/secrets.ts'
 import { SubagentsApi } from '../subagents/api.ts'
-import { BoardApi } from '../board/api.ts'
+import { MessagesApi } from '../messages/api.ts'
 import { SubscriptionsApi } from './api.ts'
 import {
   CreateAction,
@@ -348,7 +350,7 @@ function backend(host: ExtensionHost) {
                 : `Subscription ${sub.id} "${sub.title}" ${kind}: ${text}`
           if (kind === 'escalated')
             await host
-              .need(BoardApi)
+              .need(MessagesApi)
               .send(
                 sub.conversationId,
                 { to: '@ultimate', text: content, reply: false },
@@ -998,11 +1000,11 @@ export const actions = {
     (args, { host }) => backend(host).operate(input(args, 'delete')) as Promise<{ id: string }>,
   ),
 }
-/** The Subscriptions surface polls these every 2 s while it is on screen. */
+/** The Subscriptions panel polls these every 2 s while it is open. */
 export const pollActions = ['list', 'log', 'script']
 export default function subscriptions(host: ExtensionHost) {
   host.need(SubagentsApi)
-  host.need(BoardApi)
+  host.need(MessagesApi)
   const api = backend(host)
   host.implement(SubscriptionsApi, {
     start: async (id) => (await api.operate({ action: 'start', id }), api.status(id)),
@@ -1054,23 +1056,40 @@ export default function subscriptions(host: ExtensionHost) {
             context,
           )
           if (cached) return cached
+          const caller =
+            args.action === 'create' || args.action === 'subscribe'
+              ? await actingAs(host, tool.conversationId, context)
+              : tool.conversationId
           const saved = await tool.commit(
             async (tx) => json(await tx.doc(Receipt, tool.taskId)),
             context,
           )
           let receipt = saved
           if (saved.result === undefined) {
-            const prepared = await api.prepare(args, tool.conversationId)
+            const prepared = await api.prepare(args, caller)
             receipt = await tool
               .commit(async (tx) => {
                 const value = await tx.doc(Receipt, tool.taskId)
                 if (value.result === undefined)
-                  Object.assign(value, await api.change(tx, args, prepared, tool.conversationId))
+                  Object.assign(value, await api.change(tx, args, prepared, caller))
                 return json(value)
               }, context)
               .finally(() => api.settle(prepared))
           }
           await api.apply(receipt.effect)
+          if (caller !== tool.conversationId) {
+            const sub = receipt.result as unknown as Subscription
+            await host
+              .need(LineageApi)
+              .leaveNote(
+                caller,
+                `Side chat #${tool.conversationId} ${args.action === 'create' ? 'created' : 'subscribed to'} subscription ${sub.id}.`,
+                {
+                  from: tool.conversationId,
+                  requestId: `sidechat:subscription:${tool.taskId}:${tool.callId}`,
+                },
+              )
+          }
           return tool.memo(
             'result',
             { output: [{ type: 'text' as const, text: concise(receipt.result!) }] },
