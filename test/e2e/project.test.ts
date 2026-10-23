@@ -41,7 +41,12 @@ it('prints a single-line error for a missing project', async () => {
     [join(ultimateRoot, 'bin/ultimate.ts'), missing, '--no-open'],
     {
       cwd: ultimateRoot,
-      env: cleanEnv({ HOME: userHome, ULTIMATE_HOME: join(userHome, 'state') }),
+      // Node 22 prints its SQLite ExperimentalWarning on stderr; the assertion is about the app's own single error line.
+      env: cleanEnv({
+        HOME: userHome,
+        ULTIMATE_HOME: join(userHome, 'state'),
+        NODE_NO_WARNINGS: '1',
+      }),
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
