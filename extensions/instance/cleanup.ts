@@ -52,11 +52,13 @@ export async function cleanPreview(home: string) {
     }
     const branchPrefix = `ultimate/${createHash('sha256').update(home).digest('hex').slice(0, 6)}-`
     for (const common of repositories) {
+      // Porcelain v1 without `-z`: older gits reject the flag, and a preview home never registers
+      // paths with newlines. Records are separated by blank lines, fields by newlines.
       const records = (
-        await git(common, '--git-dir', common, 'worktree', 'list', '--porcelain', '-z')
-      ).split('\0\0')
+        await git(common, '--git-dir', common, 'worktree', 'list', '--porcelain')
+      ).split('\n\n')
       for (const record of records) {
-        const fields = record.split('\0')
+        const fields = record.split('\n')
         const path = fields.find((field) => field.startsWith('worktree '))?.slice(9)
         if (!path) continue
         const inside = relative(resolve(home), path)
