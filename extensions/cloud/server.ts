@@ -8,10 +8,11 @@ import { implementAction } from '../../lib/actions.ts'
 import { cloudConfig } from '../../lib/cloud.ts'
 import { projectIdentity } from '../../lib/project-identity.ts'
 import { readSecret } from '../../lib/secrets.ts'
+import { CloudApi } from './api.ts'
 import { PauseApi } from '../pause/api.ts'
 import { SecretsApi } from '../secrets/api.ts'
 import { TailscaleApi } from '../tailscale/api.ts'
-import { backUp, classify, Conflict, readBackup } from './backup.ts'
+import { backUp, chapterKey, classify, Conflict, readBackup } from './backup.ts'
 import { join, joinState, saveCloud } from './join.ts'
 import { BackupAction, BackupEvent, JoinAction, JoinStateAction, StateAction } from './refs.ts'
 import type { CloudState } from './types.ts'
@@ -44,7 +45,13 @@ async function setup(host: ExtensionHost) {
   if (!config) return { status: 'off' as const }
   const identity = await projectIdentity(host.projectRoot)
   if (!identity) return { status: 'local' as const, config }
-  return { status: 'on' as const, config, key: identity.key }
+  const { chapter } = host
+  return {
+    status: 'on' as const,
+    config,
+    key: chapterKey(identity.key, chapter.name, chapter.number === 1),
+    dir: chapter.dir,
+  }
 }
 
 /** Commit one event on its own, right after the change it records; a failure only reports. */
@@ -79,7 +86,7 @@ export async function backup(host: ExtensionHost, force: boolean) {
 async function upload(
   host: ExtensionHost,
   running: Running,
-  ready: { config: { url: string; token: string; machine: string }; key: string },
+  ready: { config: { url: string; token: string; machine: string }; key: string; dir: string },
   force: boolean,
 ) {
   const started = Date.now()
@@ -93,7 +100,7 @@ async function upload(
       ...ready.config,
       secret,
       key: ready.key,
-      home: host.home,
+      dir: ready.dir,
       projectRoot: host.projectRoot,
       force,
       ...(tailnet?.startsWith('https://') ? { tailnet } : {}),
@@ -139,10 +146,11 @@ export const actions = {
     const running = runningIn(host)
     const name = basename(host.projectRoot)
     if (ready.status !== 'on') return { status: ready.status, name }
-    const saved = await readBackup(host.home, ready.key)
+    const saved = await readBackup(ready.dir, ready.key)
     return {
       status: 'on',
       name,
+      chapter: { name: host.chapter.name, number: host.chapter.number },
       machine: ready.config.machine,
       ...(saved ? { lastBackup: saved.last } : {}),
       ...(running.backup ? { backup: { ...running.backup } } : {}),
@@ -173,6 +181,10 @@ export const actions = {
 export const userActions = ['backup', 'join']
 
 export default function cloud(host: ExtensionHost) {
+  host.implement(CloudApi, {
+    backup: () => backup(host, false),
+    status: async () => (await setup(host)).status,
+  })
   // Optional services, resolved where they are called; declared here so the catalogue lists them.
   host.want(TailscaleApi)
   host.want(PauseApi)
